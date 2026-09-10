@@ -1,9 +1,5 @@
 #include <WiFi.h>
-#include <Firebase_ESP_Client.h>
-
-// Helpers from Firebase ESP Client
-#include <addons/TokenHelper.h>
-#include <addons/RTDBHelper.h>
+#include <FirebaseESP32.h>
 
 // Load sensitive credentials
 #include "secrets.h"
@@ -17,24 +13,65 @@ FirebaseConfig config;
 unsigned long lastFirebaseUpdate = 0;
 const unsigned long FIREBASE_INTERVAL_MS = 5000; // Run every 5 seconds without blocking
 
+void onWiFiEvent(WiFiEvent_t event) {
+  switch (event) {
+    case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+      Serial.println();
+      Serial.println("[Wi-Fi] Status: Connected!");
+      Serial.printf("[Wi-Fi] Connected to: %s\n", WiFi.SSID().c_str());
+      Serial.printf("[Wi-Fi] IP Address:   %s\n", WiFi.localIP().toString().c_str());
+      Serial.printf("[Wi-Fi] Signal (RSSI): %d dBm\n", WiFi.RSSI());
+      Serial.println("------------------------------------------");
+      break;
+    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+      Serial.println("[Wi-Fi] Disconnected. Reconnecting...");
+      break;
+    default:
+      break;
+  }
+}
+
 void initWiFi() {
+  Serial.println();
+  Serial.println("==========================================");
+  Serial.println("   ThermaFan ESP32 System Initializing    ");
+  Serial.println("==========================================");
+
+  WiFi.onEvent(onWiFiEvent);
   WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.print("Connecting to Wi-Fi");
+  Serial.printf("Connecting to Wi-Fi: %s", WIFI_SSID);
 
   unsigned long startAttemptTime = millis();
-  // Attempt connection with a 15-second non-blocking timeout
   while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 15000) {
     delay(500);
     Serial.print(".");
   }
 
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("\n[WARN] Wi-Fi connection timed out. Hardware operations will still run!");
+    Serial.println("\n[Wi-Fi] Connecting in background...");
+  }
+}
+
+void syncTime() {
+  // SSL needs accurate time for certificate validation
+  configTime(8 * 3600, 0, "pool.ntp.org", "time.nist.gov");
+  Serial.print("[NTP] Syncing clock");
+  time_t now = time(nullptr);
+  unsigned long startAttempt = millis();
+  while (now < 1000000 && millis() - startAttempt < 10000) {
+    delay(300);
+    Serial.print(".");
+    now = time(nullptr);
+  }
+  Serial.println();
+  if (now > 1000000) {
+    struct tm timeinfo;
+    localtime_r(&now, &timeinfo);
+    Serial.printf("[NTP] Time synced: %s", asctime(&timeinfo));
   } else {
-    Serial.println();
-    Serial.print("Connected! IP Address: ");
-    Serial.println(WiFi.localIP());
+    Serial.println("[NTP] Time sync pending, continuing...");
   }
 }
 
@@ -64,6 +101,7 @@ void setup() {
   delay(1000); // Startup settle delay
 
   initWiFi();
+  syncTime();
   initFirebase();
 }
 
@@ -76,7 +114,7 @@ void handleFirebaseTasks() {
 
     // Test write
     Serial.printf("[Firebase] Writing value %d to /test/data...\n", testValue);
-    if (Firebase.RTDB.setInt(&fbdo, "/test/data", testValue)) {
+    if (Firebase.setInt(fbdo, "/test/data", testValue)) {
       Serial.println("[Firebase] Data written successfully!");
       Serial.print("Path: ");
       Serial.println(fbdo.dataPath());
@@ -88,7 +126,7 @@ void handleFirebaseTasks() {
 
     // Test read
     Serial.println("[Firebase] Reading from /test/data...");
-    if (Firebase.RTDB.getInt(&fbdo, "/test/data")) {
+    if (Firebase.getInt(fbdo, "/test/data")) {
       Serial.printf("[Firebase] Read value: %d\n", fbdo.intData());
     } else {
       Serial.printf("[Firebase] Read failed: %s\n", fbdo.errorReason().c_str());
